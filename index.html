@@ -583,8 +583,24 @@ const V5C = (function () {
     if (!back || back.length !== payload.length) {
       throw new Error('写入后回读校验失败（期望 ' + payload.length + ' 字节，实际 ' + (back ? back.length : 0) + ' 字节）— 可能被杀毒软件拦截');
     }
+    const written = await readFileOrNull(linux, name);
+    let mtime = '';
+    try { mtime = new Date((await linux.getFileHandle(name)).name ? Date.now() : Date.now()).toLocaleTimeString('zh-CN', { hour12: false }); } catch (e) { }
     await idbSet('state', { label: configLabel, hadBackup: hadBackup, at: Date.now() });
-    return { name, hadBackup, label: configLabel };
+    // 30 秒后自动复查：抓“写完被杀软/游戏删除或改写”的情况（这正是部分人“没有修改”的常见原因）
+    setTimeout(async () => {
+      try {
+        const again = await readFileOrNull(linux, name);
+        if (!again) {
+          msg($('msgWork'), '⚠ 警告：部署的文件在 30 秒内被删除（很可能被杀毒软件拦截）。请把游戏目录加入杀软白名单后重新部署。', 'warn');
+        } else if (again.length !== payload.length) {
+          msg($('msgWork'), '⚠ 警告：文件被其它程序改写（现在 ' + again.length + ' 字节，应为 ' + payload.length + '）。请把游戏目录加入杀软白名单。', 'warn');
+        } else {
+          msg($('msgWork'), '已复查：配置文件仍在且大小正确（' + again.length + ' 字节）· 请完全退出游戏后重新启动', 'ok');
+        }
+      } catch (e) { }
+    }, 30000);
+    return { name, hadBackup, label: configLabel, bytes: written ? written.length : 0, at: mtime };
   }
   function b64ToBytes(b64) {
     const s = atob(b64);
@@ -741,7 +757,7 @@ const V5C = (function () {
       const r = await deploy();
       deployed = true;
       $('btnDone').disabled = false;
-      msg($('msgWork'), '部署成功 · 已写入 ' + (r.label || configLabel) + '\\Linux\\' + r.name + ' · 2,033,170 字节' + (r.hadBackup ? ' · 原配置已备份' : '') + '\n请完全退出游戏后重新启动，否则不会生效', 'ok');
+      msg($('msgWork'), '部署成功 · 已写入 ' + (r.label || configLabel) + '\\Linux\\' + r.name + ' · ' + (r.bytes || 0) + ' 字节 · ' + (r.at || '') + (r.hadBackup ? ' · 原配置已备份' : '') + '\n请完全退出游戏后重新启动，否则不会生效（30 秒后会自动复查文件是否被杀软删除）', 'ok');
       let left = MANUAL_SEC;
       showMon('★ 请立即打开游戏 ★', '剩余 ' + left + ' 秒 · 总计 2 分钟 · 不在此时间内打开游戏则无效（到点自动收回）');
       cdTimer = setInterval(() => {
