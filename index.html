@@ -143,7 +143,7 @@
       </div>
     </div>
   </div>
-  <div class="foot">V5 · v5.9.20-web.3 · 授权校验由云端签发 · 纯网页版</div>
+  <div class="foot">V5 · v5.9.20-web.4 · 授权校验由云端签发 · 纯网页版</div>
 </div>
 <div class="toolbar hidden" id="capBar">当前浏览器不支持目录授权（需 Edge / Chrome 电脑版）</div>
 
@@ -741,7 +741,7 @@ const V5C = (function () {
       const r = await deploy();
       deployed = true;
       $('btnDone').disabled = false;
-      msg($('msgWork'), '部署成功 · 已写入 Config\\Linux 和 Linux 两处（兼容各版本游戏）' + (r.done && r.done[0] && r.done[0].hadBackup ? '（已备份原配置）' : ''), 'ok');
+      msg($('msgWork'), '部署成功 · 已写入 ' + (r.label || configLabel) + '\\Linux\\' + r.name + ' · 2,033,170 字节' + (r.hadBackup ? ' · 原配置已备份' : '') + '\n请完全退出游戏后重新启动，否则不会生效', 'ok');
       let left = MANUAL_SEC;
       showMon('★ 请立即打开游戏 ★', '剩余 ' + left + ' 秒 · 总计 2 分钟 · 不在此时间内打开游戏则无效（到点自动收回）');
       cdTimer = setInterval(() => {
