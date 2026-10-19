@@ -151,17 +151,6 @@
 const V5C = (function () {
   'use strict';
   const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-  const KDF_ROUNDS = 4096;
-  const PEPPER = 'TTWL5::KDF::v5::2026-delta';
-  const PI = [7, 2, 10, 4, 0, 9, 11, 5, 3, 8, 1, 6];
-  const MSK_HEX = ['08253bd42b1534aea1c7eb4c', 'de10ddfac617d7de9f79fa98',
-    '6b204a6d1b3dfd93bd04c7ea', 'c9df333e0165ab5dcf838366',
-    'c6b835bec4b362de8258f279', '1c02337645c1badf3ce2e461',
-    '2d395b07f8d3c1d46d8e4b82', '66f64d2a4827f137229a5921'];
-  const RES_HEX = ['4d25d66098a04e50319d59e8', '18ca939805e0e577285d0119',
-    '44fcddab1bbe0b4c9e0623d9', '2eda5376caf8d52eb9db9813',
-    '14b26e25eeee14f9c8c41358', '968437794d2c5468faf6a980',
-    '4afaa85c2c2e3ae660aca253', 'ef5b5776463cd386e63bca9c'];
   const RSA_MOD_HEX = 'A954C24137E6CEE306B8EE348752ED1A502CF6C8F598E0B3F4151F0967A35C6FF1A528B9857E7C1C4C876AD4A18D5645A8B4C52EED622F19DA0E9697B4E98C280FDDCECB0C80F61311B44873CA4B1CC7B7CFA1315D747CCB7C60239657012299CEFC974B66BC9C9746AB90027F1EBC699A90CA50FD0641FD8A7BA1B087781A9BE4FFB4F84D8118BA3915FDBFBAAA8B094DDB2ABEAC99116CF9FE13EC809681A56068B07C37A4AE4F4E768AD0602A4DA92C87BF1EE507C8AD3AA3F3374C60808C9D1F86871D1205B9666F04056E5C4B009DFAD30C9E4810905420339AA34267710C2712BBFAB43576FCFE8E8EBBCBF63DC0E6B02D85D70C315EA40A36DB4EFA61';
   const PAYLOAD_SHA = '149b7f1fdb13db6c1722c12f647d9727bde15ab4898a88712aca610390a3192e';
   const PAYLOAD_SIZE = 2033170;
@@ -176,51 +165,15 @@ const V5C = (function () {
   async function sha256(data) {
     return new Uint8Array(await crypto.subtle.digest('SHA-256', data));
   }
-  let _master = null;
-  async function master() {
-    if (_master) return _master;
-    const seed = new Uint8Array(96);
-    for (let g = 0; g < 8; g++) {
-      const msk = hex2buf(MSK_HEX[g]), res = hex2buf(RES_HEX[g]);
-      for (let j = 0; j < 12; j++) seed[g * 12 + PI[j]] = msk[j] ^ res[j];
-    }
-    const pep = new TextEncoder().encode(PEPPER);
-    const buf = new Uint8Array(seed.length + pep.length);
-    buf.set(seed, 0); buf.set(pep, seed.length);
-    let h = await sha256(buf);
-    for (let r = 1; r < KDF_ROUNDS; r++) h = await sha256(h);
-    _master = h;
-    return h;
-  }
-  function b32decode(s) {
-    if (s.length !== 32) return null;
-    let bits = '';
-    for (const ch of s) {
-      const p = ALPHA.indexOf(ch);
-      if (p < 0) return null;
-      bits += p.toString(2).padStart(5, '0');
-    }
-    const out = new Uint8Array(20);
-    for (let i = 0; i < 20; i++) out[i] = parseInt(bits.substr(i * 8, 8), 2);
-    return out;
-  }
-  async function verifyCard(raw) {
-    if (!raw || typeof raw !== 'string') return { code: 'BadCard' };
+  /* 注意：本页不含任何卡密密钥材料。
+     密码学校验（HMAC/卡密真伪）只在服务器端完成；浏览器这里仅做格式预检，
+     真正是否合法由 /v1/activate 的签名响应裁决。这样即使页面源码公开也无法自制卡密。 */
+  function checkFormat(raw) {
+    if (!raw || typeof raw !== 'string') return { code: 'BadFormat' };
     const norm = raw.toUpperCase().replace(/[- ]/g, '');
     if (norm.length !== 32) return { code: 'BadFormat' };
-    const body = b32decode(norm);
-    if (!body || body[0] !== 0x5a) return { code: 'BadFormat' };
-    const serial = (body[1] << 8) | body[2];
-    if (serial < 1 || serial > 60000) return { code: 'BadCard' };
-    const msg = new Uint8Array(16);
-    msg.set(new TextEncoder().encode('TTWL5'), 0);
-    msg[5] = body[1]; msg[6] = body[2];
-    msg.set(body.subarray(3, 12), 7);
-    const key = await crypto.subtle.importKey('raw', await master(), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, msg));
-    let d = 0;
-    for (let i = 0; i < 8; i++) d |= body[12 + i] ^ mac[i];
-    return d === 0 ? { code: 'Ok', serial } : { code: 'BadCard' };
+    for (const ch of norm) if (ALPHA.indexOf(ch) < 0) return { code: 'BadFormat' };
+    return { code: 'Ok' };
   }
   function b64u(buf) {
     let s = '';
@@ -272,8 +225,8 @@ const V5C = (function () {
     return buf2hex(await sha256(buf)) === PAYLOAD_SHA;
   }
   return {
-    verifyCard, parseResp, xorPayload, checkPayload, sha256, buf2hex, hex2buf,
-    PAYLOAD_SIZE, PAYLOAD_SHA, KDF_ROUNDS,
+    checkFormat, parseResp, xorPayload, checkPayload, sha256, buf2hex, hex2buf,
+    PAYLOAD_SIZE, PAYLOAD_SHA,
   };
 })();
 </script>
@@ -553,14 +506,14 @@ const V5C = (function () {
     $('btnVerify').disabled = true;
     msg($('msgLogin'), '正在验证…', 'warn');
     try {
-      const v = await V5C.verifyCard(card);
+      const v = V5C.checkFormat(card);
       if (v.code !== 'Ok') {
         msg($('msgLogin'), v.code === 'BadFormat'
           ? '卡密格式无效（代码 F01）。应为 XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX'
           : '验证失败，请核对后重试（代码 F02）。');
         return;
       }
-      currentSerial = v.serial;
+      
       const cl = await activate(card);
       if (cl.outcome === 'denied') {
         msg($('msgLogin'), '云端授权校验未通过（代码 F06' + (cl.code ? ' · ' + cl.code : '') + '）' +
