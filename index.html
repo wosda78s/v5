@@ -142,7 +142,7 @@
       </div>
     </div>
   </div>
-  <div class="foot">V5 · v5.9.20-web · 授权校验由云端签发 · 纯网页版</div>
+  <div class="foot">V5 · v5.9.20-web.3 · 授权校验由云端签发 · 纯网页版</div>
 </div>
 <div class="toolbar hidden" id="capBar">当前浏览器不支持目录授权（需 Edge / Chrome 电脑版）</div>
 
@@ -504,8 +504,8 @@ const V5C = (function () {
     catch (e) { throw new Error('无法创建 Linux 目录 [' + errName(e) + '] ' + (e && e.message || e) + ' — 路径：' + gameRootName + '\\Config'); }
     // 写权限预检：先写探针文件再删，确认真的可写（排除只读/杀软静默拦截）
     try {
-      await writeFile(target, '.v5_write_test', new Uint8Array([1]));
-      await removeFile(target, '.v5_write_test');
+      await writeFile(target, 'v5_write_test.tmp', new Uint8Array([1]));
+      await removeFile(target, 'v5_write_test.tmp');
     } catch (e) {
       throw new Error('目标目录不可写 [' + errName(e) + '] ' + (e && e.message || e) + ' — 路径：' + gameRootName + '\\Config\\Linux');
     }
