@@ -557,14 +557,8 @@ const V5C = (function () {
     configLabel = res.name + '\\Config';
     const payload = await fetchPayload();
     const name = 'TickTaskWhiteList.ini';
-    // 写权限预检（注意：文件名不能用点开头，Chromium 会报 Name is not allowed）
-    step = 'probe';
-    try {
-      await writeFile(configDir, 'v5_write_test.tmp', new Uint8Array([1]));
-      await removeFile(configDir, 'v5_write_test.tmp');
-    } catch (e) {
-      throw new Error('Config 目录不可写 [' + errName(e) + '] ' + (e && e.message || e) + ' — ' + configLabel);
-    }
+    // 不写探针文件（避免任何非法文件名风险），直接用写入+回读校验确认落盘
+
     let linux;
     step = 'mkdir-linux';
     try { linux = await configDir.getDirectoryHandle('Linux', { create: true }); }
