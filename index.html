@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>V5 安全助手</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: "微软雅黑", "Microsoft YaHei", system-ui, sans-serif;
+    background: #0e1220; color: #e8eefc;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; overflow: hidden;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0;
+    background: url("assets/uibg2.jpg") center/cover no-repeat;
+    opacity: .30; filter: saturate(1.1); z-index: 0;
+  }
+  body::after {
+    content: ""; position: fixed; inset: 0;
+    background: radial-gradient(ellipse at 30% 10%, rgba(138,77,240,.28), transparent 55%),
+                radial-gradient(ellipse at 80% 90%, rgba(255,95,168,.20), transparent 50%),
+                linear-gradient(180deg, rgba(10,14,26,.75), rgba(10,14,26,.92));
+    z-index: 1;
+  }
+  .stage { position: relative; z-index: 2; width: min(560px, 94vw); }
+  .card {
+    background: rgba(20, 26, 44, .62);
+    border: 1px solid rgba(255,255,255,.14);
+    border-radius: 22px; backdrop-filter: blur(18px);
+    box-shadow: 0 24px 70px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.08);
+    padding: 34px 36px 30px;
+  }
+  .card h1 { font-size: 22px; letter-spacing: 3px; font-weight: 700; }
+  .card .sub { margin-top: 8px; font-size: 13px; color: #93a4c7; }
+  .field {
+    margin-top: 22px; width: 100%; height: 52px; border-radius: 12px;
+    background: rgba(18, 23, 40, .85);
+    border: 1px solid rgba(120,160,255,.25);
+    color: #b9dcff; font: 600 17px/1 Consolas, monospace; text-align: center;
+    letter-spacing: 1px; outline: none;
+  }
+  .field:focus { border-color: rgba(140,180,255,.6); box-shadow: 0 0 0 3px rgba(120,160,255,.12); }
+  .row { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; }
+  .remember { display: flex; align-items: center; gap: 8px; color: #93a4c7; font-size: 13px; cursor: pointer; user-select: none; }
+  .remember input { accent-color: #8a4df0; width: 15px; height: 15px; }
+  .btn {
+    margin-top: 20px; width: 100%; height: 54px; border: 0; border-radius: 14px;
+    font: 700 17px "微软雅黑"; color: #fff; cursor: pointer; letter-spacing: 2px;
+    background: linear-gradient(135deg, #ff5fa8, #8a4df0 70%);
+    box-shadow: 0 10px 30px rgba(138,77,240,.45);
+    transition: filter .15s, transform .05s;
+  }
+  .btn:hover { filter: brightness(1.12); }
+  .btn:active { transform: translateY(1px); }
+  .btn[disabled] { filter: grayscale(.5) brightness(.7); cursor: not-allowed; }
+  .btn.ghost {
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.28);
+    box-shadow: none; font-weight: 600; letter-spacing: 1px;
+  }
+  .btn.sm { height: 38px; font-size: 13px; border-radius: 10px; width: auto; padding: 0 18px; margin-top: 0; }
+  .msg { margin-top: 14px; font-size: 13px; color: #ff9b9b; min-height: 18px; white-space: pre-line; }
+  .msg.ok { color: #7dffb3; }
+  .msg.warn { color: #ffd166; }
+  .hidden { display: none !important; }
+  .scroll { max-height: 52vh; overflow-y: auto; padding-right: 4px; }
+  select, .field.small {
+    height: 42px; font-size: 13px; border-radius: 10px; padding: 0 12px;
+    background: rgba(18, 23, 40, .85); border: 1px solid rgba(120,160,255,.25);
+    color: #cfe4ff; width: 100%;
+  }
+  .dirbox {
+    margin-top: 14px; padding: 14px 16px; border-radius: 12px;
+    background: rgba(255,255,255,.04); border: 1px dashed rgba(255,255,255,.18);
+    font-size: 13px; color: #9fb4d8; line-height: 1.7;
+  }
+  .mon { text-align: center; margin-top: 18px; }
+  .mon .big {
+    font-size: 28px; font-weight: 800; letter-spacing: 2px;
+    color: #ffd166; text-shadow: 0 0 24px rgba(255,209,102,.35);
+    animation: pulse 1s infinite alternate;
+  }
+  .mon .big.stop { animation: none; color: #e8eefc; text-shadow: none; font-size: 22px; }
+  .mon .cd { margin-top: 10px; font-size: 15px; color: #ffb37c; font-weight: 700; }
+  @keyframes pulse { from { opacity: .72; } to { opacity: 1; } }
+  .foot { margin-top: 16px; font-size: 11.5px; color: #64759b; text-align: center; }
+  .badge {
+    display: inline-block; margin-left: 8px; padding: 3px 10px; border-radius: 20px;
+    font-size: 11.5px; font-weight: 700; color: #0e1220;
+    background: linear-gradient(135deg, #7dffb3, #4dd0a8);
+  }
+  .tools { display: flex; gap: 10px; margin-top: 14px; }
+  .tools .btn.sm { flex: 0 0 auto; }
+  .toolbar {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    z-index: 3; background: rgba(30, 24, 20, .85); border: 1px solid rgba(255,180,120,.35);
+    color: #ffcf9e; padding: 9px 16px; border-radius: 12px; font-size: 12.5px;
+  }
+</style>
+</head>
+<body>
+<div class="stage">
+  <!-- 第 1 页：卡密验证 -->
+  <div class="card" id="pageLogin">
+    <h1>卡 密 验 证<span class="badge hidden" id="roamBadge">网吧漫游中</span></h1>
+    <div class="sub">请输入供应商提供的专属卡密</div>
+    <input class="field" id="cardInput" maxlength="140" placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
+    <div class="row">
+      <label class="remember"><input type="checkbox" id="remember"> 记住卡密（下次自动填入）</label>
+    </div>
+    <button class="btn" id="btnVerify">验 证 并 进 入</button>
+    <div class="msg" id="msgLogin"></div>
+    <div class="tools">
+      <button class="btn ghost sm" id="btnUnbind">网吧解绑</button>
+    </div>
+  </div>
+
+  <!-- 第 2 页：工作 -->
+  <div class="card hidden" id="pageWork">
+    <h1>安 全 助 手<span class="badge hidden" id="roamBadge2">网吧漫游中</span></h1>
+    <div class="sub">选择游戏目录后一键部署</div>
+    <div class="scroll">
+      <div class="dirbox" id="dirBox">
+        尚未选择游戏目录。点击下方按钮，选择三角洲游戏根目录（含 Binaries 的文件夹）。
+        浏览器会记住这次授权，下次无需重复选择。
+      </div>
+      <div class="tools">
+        <button class="btn ghost sm" id="btnPick">选择游戏文件夹</button>
+        <button class="btn ghost sm" id="btnRePick">重新选择</button>
+      </div>
+      <button class="btn" id="btnDeploy">一 键 安 全 启 动</button>
+      <div class="tools">
+        <button class="btn ghost sm" id="btnDone" disabled>我已玩完 · 收回配置</button>
+        <button class="btn ghost sm" id="btnBack">返回卡密页</button>
+      </div>
+      <div class="msg" id="msgWork"></div>
+      <div class="mon hidden" id="monBox">
+        <div class="big" id="monTitle">★ 请立即手动启动游戏 ★</div>
+        <div class="cd" id="monCd"></div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">V5 · v5.9.20-web · 授权校验由云端签发 · 纯网页版</div>
+</div>
+<div class="toolbar hidden" id="capBar">当前浏览器不支持目录授权（需 Edge / Chrome 电脑版）</div>
+
+<!-- ================= 纯计算核心（可独立测试，无 DOM 依赖） ================= -->
+<script id="v5core">
+const V5C = (function () {
+  'use strict';
+  const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  const KDF_ROUNDS = 4096;
+  const PEPPER = 'TTWL5::KDF::v5::2026-delta';
+  const PI = [7, 2, 10, 4, 0, 9, 11, 5, 3, 8, 1, 6];
+  const MSK_HEX = ['08253bd42b1534aea1c7eb4c', 'de10ddfac617d7de9f79fa98',
+    '6b204a6d1b3dfd93bd04c7ea', 'c9df333e0165ab5dcf838366',
+    'c6b835bec4b362de8258f279', '1c02337645c1badf3ce2e461',
+    '2d395b07f8d3c1d46d8e4b82', '66f64d2a4827f137229a5921'];
+  const RES_HEX = ['4d25d66098a04e50319d59e8', '18ca939805e0e577285d0119',
+    '44fcddab1bbe0b4c9e0623d9', '2eda5376caf8d52eb9db9813',
+    '14b26e25eeee14f9c8c41358', '968437794d2c5468faf6a980',
+    '4afaa85c2c2e3ae660aca253', 'ef5b5776463cd386e63bca9c'];
+  const RSA_MOD_HEX = 'A954C24137E6CEE306B8EE348752ED1A502CF6C8F598E0B3F4151F0967A35C6FF1A528B9857E7C1C4C876AD4A18D5645A8B4C52EED622F19DA0E9697B4E98C280FDDCECB0C80F61311B44873CA4B1CC7B7CFA1315D747CCB7C60239657012299CEFC974B66BC9C9746AB90027F1EBC699A90CA50FD0641FD8A7BA1B087781A9BE4FFB4F84D8118BA3915FDBFBAAA8B094DDB2ABEAC99116CF9FE13EC809681A56068B07C37A4AE4F4E768AD0602A4DA92C87BF1EE507C8AD3AA3F3374C60808C9D1F86871D1205B9666F04056E5C4B009DFAD30C9E4810905420339AA34267710C2712BBFAB43576FCFE8E8EBBCBF63DC0E6B02D85D70C315EA40A36DB4EFA61';
+  const PAYLOAD_SHA = '149b7f1fdb13db6c1722c12f647d9727bde15ab4898a88712aca610390a3192e';
+  const PAYLOAD_SIZE = 2033170;
+  const PAYLOAD_KEY_TEXT = 'TTWL5::PAYLOAD::v59::delta';
+
+  const hex2buf = (h) => {
+    const b = new Uint8Array(h.length / 2);
+    for (let i = 0; i < b.length; i++) b[i] = parseInt(h.substr(i * 2, 2), 16);
+    return b;
+  };
+  const buf2hex = (b) => Array.from(b, (x) => ('0' + x.toString(16)).slice(-2)).join('');
+  async function sha256(data) {
+    return new Uint8Array(await crypto.subtle.digest('SHA-256', data));
+  }
+  let _master = null;
+  async function master() {
+    if (_master) return _master;
+    const seed = new Uint8Array(96);
+    for (let g = 0; g < 8; g++) {
+      const msk = hex2buf(MSK_HEX[g]), res = hex2buf(RES_HEX[g]);
+      for (let j = 0; j < 12; j++) seed[g * 12 + PI[j]] = msk[j] ^ res[j];
+    }
+    const pep = new TextEncoder().encode(PEPPER);
+    const buf = new Uint8Array(seed.length + pep.length);
+    buf.set(seed, 0); buf.set(pep, seed.length);
+    let h = await sha256(buf);
+    for (let r = 1; r < KDF_ROUNDS; r++) h = await sha256(h);
+    _master = h;
+    return h;
+  }
+  function b32decode(s) {
+    if (s.length !== 32) return null;
+    let bits = '';
+    for (const ch of s) {
+      const p = ALPHA.indexOf(ch);
+      if (p < 0) return null;
+      bits += p.toString(2).padStart(5, '0');
+    }
+    const out = new Uint8Array(20);
+    for (let i = 0; i < 20; i++) out[i] = parseInt(bits.substr(i * 8, 8), 2);
+    return out;
+  }
+  async function verifyCard(raw) {
+    if (!raw || typeof raw !== 'string') return { code: 'BadCard' };
+    const norm = raw.toUpperCase().replace(/[- ]/g, '');
+    if (norm.length !== 32) return { code: 'BadFormat' };
+    const body = b32decode(norm);
+    if (!body || body[0] !== 0x5a) return { code: 'BadFormat' };
+    const serial = (body[1] << 8) | body[2];
+    if (serial < 1 || serial > 60000) return { code: 'BadCard' };
+    const msg = new Uint8Array(16);
+    msg.set(new TextEncoder().encode('TTWL5'), 0);
+    msg[5] = body[1]; msg[6] = body[2];
+    msg.set(body.subarray(3, 12), 7);
+    const key = await crypto.subtle.importKey('raw', await master(), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, msg));
+    let d = 0;
+    for (let i = 0; i < 8; i++) d |= body[12 + i] ^ mac[i];
+    return d === 0 ? { code: 'Ok', serial } : { code: 'BadCard' };
+  }
+  function b64u(buf) {
+    let s = '';
+    for (const x of buf) s += String.fromCharCode(x);
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  let _pub = null;
+  async function pubKey() {
+    if (_pub) return _pub;
+    _pub = await crypto.subtle.importKey('jwk',
+      { kty: 'RSA', n: b64u(hex2buf(RSA_MOD_HEX)), e: 'AQAB' },
+      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+    return _pub;
+  }
+  async function verifySig(canonical, sigB64) {
+    const sig = Uint8Array.from(atob(sigB64), (c) => c.charCodeAt(0));
+    return crypto.subtle.verify('RSASSA-PKCS1-v1_5', await pubKey(), sig,
+      new TextEncoder().encode(canonical));
+  }
+  async function parseResp(text) {
+    if (!text) return null;
+    let sig = null;
+    const keep = [];
+    for (const rawLine of text.replace(/\r\n/g, '\n').split('\n')) {
+      const line = rawLine.replace(/\r+$/, '');
+      if (!line) continue;
+      if (line.startsWith('SIG=')) { sig = line.slice(4); continue; }
+      keep.push(line);
+    }
+    if (!sig) return null;
+    if (!(await verifySig(keep.join('\n'), sig))) return null;
+    const d = {};
+    for (const line of keep) {
+      const eq = line.indexOf('=');
+      if (eq <= 0) continue;
+      const k = line.slice(0, eq);
+      if (!(k in d)) d[k] = line.slice(eq + 1);
+    }
+    return d;
+  }
+  async function xorPayload(buf) {
+    const key = await sha256(new TextEncoder().encode(PAYLOAD_KEY_TEXT));
+    const out = new Uint8Array(buf);
+    for (let i = 0; i < out.length; i++) out[i] ^= key[i & 31];
+    return out;
+  }
+  async function checkPayload(buf) {
+    if (buf.length !== PAYLOAD_SIZE) return false;
+    return buf2hex(await sha256(buf)) === PAYLOAD_SHA;
+  }
+  return {
+    verifyCard, parseResp, xorPayload, checkPayload, sha256, buf2hex, hex2buf,
+    PAYLOAD_SIZE, PAYLOAD_SHA, KDF_ROUNDS,
+  };
+})();
+</script>
+
+<!-- ================= UI 逻辑 ================= -->
+<script>
+(function () {
+  'use strict';
+  const API_FALLBACK = 'https://v5.154-94-226-119.sslip.io';
+  const MANUAL_SEC = 30;      // 开局提示窗口
+  const USE_SEC = 5 * 60;     // 使用窗口（之后自动收回）
+  const $ = (id) => document.getElementById(id);
+  const show = (el) => el.classList.remove('hidden');
+  const hide = (el) => el.classList.add('hidden');
+  function msg(el, text, cls) {
+    el.textContent = text || '';
+    el.className = 'msg' + (cls ? ' ' + cls : '');
+  }
+  function setRoam(on) {
+    [$('roamBadge'), $('roamBadge2')].forEach((b) => { on ? show(b) : hide(b); });
+  }
+
+  /* ---------- 本地存储（IndexedDB：目录句柄） ---------- */
+  function idb() {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open('v5web', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('kv');
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  }
+  async function idbSet(k, v) {
+    const db = await idb();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('kv', 'readwrite');
+      tx.objectStore('kv').put(v, k);
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    });
+  }
+  async function idbGet(k) {
+    const db = await idb();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('kv', 'readonly');
+      const rq = tx.objectStore('kv').get(k);
+      rq.onsuccess = () => res(rq.result || null);
+      rq.onerror = () => rej(rq.error);
+    });
+  }
+  async function idbDel(k) {
+    const db = await idb();
+    return new Promise((res) => {
+      const tx = db.transaction('kv', 'readwrite');
+      tx.objectStore('kv').delete(k);
+      tx.oncomplete = () => res();
+    });
+  }
+
+  /* ---------- 云端 API ---------- */
+  let apiBase = null;
+  async function ensureApi() {
+    if (apiBase) return apiBase;
+    const cands = [location.origin, API_FALLBACK];
+    for (const base of cands) {
+      try {
+        const r = await fetch(base + '/v1/version?ver=5.9.20', { signal: AbortSignal.timeout(5000) });
+        if (r.ok) { apiBase = base; return base; }
+      } catch (e) { }
+    }
+    apiBase = location.origin;
+    return apiBase;
+  }
+  async function cloudPost(action, fields) {
+    const base = await ensureApi();
+    const lines = ['VER=5.9.20', 'ACTION=' + action];
+    for (const [k, v] of fields) lines.push(k + '=' + (v == null ? '' : v));
+    const body = lines.join('\n') + '\n';
+    const r = await fetch(base + '/v1/' + action, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body,
+    });
+    if (!r.ok) return null;
+    return V5C.parseResp(await r.text());
+  }
+
+  /* ---------- 浏览器指纹（设备级，稳定优先） ---------- */
+  async function deviceHwid() {
+    const parts = [
+      navigator.platform || '', navigator.hardwareConcurrency || 0,
+      navigator.deviceMemory || 0,
+      (screen.width || 0) + 'x' + (screen.height || 0) + 'x' + (screen.colorDepth || 0),
+      Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+      navigator.language || '',
+    ];
+    const hex = V5C.buf2hex(await V5C.sha256(new TextEncoder().encode('V5HW1|' + parts.join('|'))));
+    return hex.slice(0, 32);
+  }
+  async function activate(card) {
+    const hwid = await deviceHwid();
+    const d = await cloudPost('activate', [
+      ['CARD', card], ['HWID', hwid], ['DEV', 'web'],
+      ['OS', navigator.userAgent.slice(0, 60)], ['CPU', 'h' + (navigator.hardwareConcurrency || 0)], ['GPU', ''],
+      ['TS', Math.floor(Date.now() / 1000)], ['NONCE', crypto.randomUUID().replace(/-/g, '')],
+    ]);
+    if (!d) return { outcome: 'offline', msg: '云端响应无效（网络或验签失败）' };
+    if (d.STATUS === 'OK') {
+      return { outcome: 'ok', serial: d.SERIAL, roaming: d.ROAMING === '1', roamLeft: +d.ROAM_LEFT || 0 };
+    }
+    if (d.CODE === 'NEED_UPDATE') return { outcome: 'denied', code: 'NEED_UPDATE', msg: d.MSG || '' };
+    return { outcome: 'denied', code: d.CODE || '', msg: d.MSG || '' };
+  }
+  async function unbindCloud(card) {
+    const hwid = await deviceHwid();
+    const d = await cloudPost('unbind', [
+      ['CARD', card], ['HWID', hwid],
+      ['TS', Math.floor(Date.now() / 1000)], ['NONCE', crypto.randomUUID().replace(/-/g, '')],
+    ]);
+    if (!d) return { ok: false, msg: '云端响应无效' };
+    if (d.STATUS === 'OK') return { ok: true, left: d.LEFT };
+    return { ok: false, code: d.CODE || '', msg: d.MSG || '' };
+  }
+
+  /* ---------- 游戏目录（File System Access） ---------- */
+  let dirHandle = null;
+  async function loadSavedDir() {
+    try {
+      const h = await idbGet('dir');
+      if (!h) return null;
+      const p = await h.queryPermission({ mode: 'readwrite' });
+      if (p === 'granted') { dirHandle = h; return h; }
+      dirHandle = h;
+      return h;
+    } catch (e) { return null; }
+  }
+  async function ensureDirPermission(h) {
+    const p = await h.queryPermission({ mode: 'readwrite' });
+    if (p === 'granted') return true;
+    const r = await h.requestPermission({ mode: 'readwrite' });
+    return r === 'granted';
+  }
+  async function pickDir() {
+    if (!window.showDirectoryPicker) throw new Error('当前浏览器不支持（请用 Edge / Chrome）');
+    const h = await window.showDirectoryPicker({ id: 'v5game', mode: 'readwrite', startIn: 'desktop' });
+    let ok = false;
+    try { await h.getDirectoryHandle('Binaries'); ok = true; } catch (e) { ok = false; }
+    if (!ok) throw new Error('请选择三角洲游戏根目录（该目录下应有 Binaries 文件夹）');
+    dirHandle = h;
+    await idbSet('dir', h);
+    return h;
+  }
+
+  /* ---------- 部署 / 清理 ---------- */
+  async function fetchPayload() {
+    const base = await ensureApi();
+    const r = await fetch(base + '/dl/ttwl_payload.dat', { signal: AbortSignal.timeout(120000) });
+    if (!r.ok) throw new Error('配置下载失败 HTTP ' + r.status);
+    const masked = new Uint8Array(await r.arrayBuffer());
+    const plain = await V5C.xorPayload(masked);
+    if (!(await V5C.checkPayload(plain))) throw new Error('配置校验失败（不完整或被篡改）');
+    return plain;
+  }
+  async function writeFile(dir, name, data) {
+    const fh = await dir.getFileHandle(name, { create: true });
+    const w = await fh.createWritable();
+    await w.write(data);
+    await w.close();
+  }
+  async function readFileOrNull(dir, name) {
+    try {
+      const fh = await dir.getFileHandle(name);
+      const f = await fh.getFile();
+      return new Uint8Array(await f.arrayBuffer());
+    } catch (e) { return null; }
+  }
+  async function removeFile(dir, name) {
+    try { await dir.removeEntry(name); return true; } catch (e) { return false; }
+  }
+  async function deploy() {
+    if (!dirHandle) throw new Error('请先选择游戏文件夹');
+    if (!(await ensureDirPermission(dirHandle))) throw new Error('目录授权被拒绝，请重新选择');
+    const payload = await fetchPayload();
+    const cfg = await dirHandle.getDirectoryHandle('Config', { create: true });
+    let linux;
+    let createdLinux = false;
+    try { linux = await cfg.getDirectoryHandle('Linux'); }
+    catch (e) { linux = await cfg.getDirectoryHandle('Linux', { create: true }); createdLinux = true; }
+    const name = 'TickTaskWhiteList.ini';
+    const old = await readFileOrNull(linux, name);
+    let hadBackup = false;
+    let bakB64 = null;
+    if (old) {
+      const bakExisting = await readFileOrNull(linux, name + '.bak');
+      if (!bakExisting) {
+        await writeFile(linux, name + '.bak', old);
+      }
+      hadBackup = true;
+      bakB64 = btoa(String.fromCharCode(...old));
+    }
+    await writeFile(linux, name, payload);
+    await idbSet('state', { hadBackup, bakB64, createdLinux, at: Date.now() });
+    return { name, hadBackup, createdLinux };
+  }
+  function b64ToBytes(b64) {
+    const s = atob(b64);
+    const out = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+    return out;
+  }
+  async function cleanup() {
+    if (!dirHandle) return '无目录';
+    try {
+      const cfg = await dirHandle.getDirectoryHandle('Config');
+      let linux;
+      try { linux = await cfg.getDirectoryHandle('Linux'); } catch (e) { return '已清理（无配置文件）'; }
+      const name = 'TickTaskWhiteList.ini';
+      const st = (await idbGet('state')) || {};
+      const bak = await readFileOrNull(linux, name + '.bak');
+      let out = '';
+      if (bak) {
+        await writeFile(linux, name, bak);
+        await removeFile(linux, name + '.bak');
+        out = '已恢复原始配置';
+      } else {
+        const cur = await readFileOrNull(linux, name);
+        if (cur) { await removeFile(linux, name); out = '已删除部署配置'; }
+        else out = '已清理（无配置文件）';
+      }
+      if (st.createdLinux) {
+        try {
+          const it = linux.values();
+          const first = await it.next();
+          if (first.done) { await cfg.removeEntry('Linux'); out += ' · 已移除空目录'; }
+        } catch (e) { }
+      }
+      await idbDel('state');
+      return out;
+    } catch (e) { return '清理失败: ' + e.message; }
+  }
+
+  /* ---------- 交互 ---------- */
+  const saved = localStorage.getItem('v5web_card') || '';
+  if (saved) { $('cardInput').value = saved; $('remember').checked = true; }
+  $('cardInput').addEventListener('input', function () {
+    const v = this.value.toUpperCase().replace(/\s/g, '');
+    if (v !== this.value) this.value = v;
+  });
+  $('cardInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btnVerify').click(); });
+
+  if (!window.showDirectoryPicker) show($('capBar'));
+
+  let currentSerial = 0;
+  let workTimer = null;
+  let cdTimer = null;
+  let phase = 'idle';
+
+  function stopTimers() {
+    if (workTimer) { clearTimeout(workTimer); workTimer = null; }
+    if (cdTimer) { clearInterval(cdTimer); cdTimer = null; }
+  }
+  function showMon(title, cd, stopped) {
+    show($('monBox'));
+    $('monTitle').textContent = title;
+    $('monTitle').className = 'big' + (stopped ? ' stop' : '');
+    $('monCd').textContent = cd || '';
+  }
+  function closePage(note) {
+    stopTimers();
+    showMon('任务完成', note || '', true);
+    msg($('msgWork'), (note || '配置已收回') + '，页面即将关闭', 'ok');
+    setTimeout(() => {
+      try { window.open('', '_self'); window.close(); } catch (e) { }
+    }, 1500);
+  }
+
+  $('btnVerify').addEventListener('click', async () => {
+    const card = $('cardInput').value.trim().toUpperCase();
+    if (!card) { msg($('msgLogin'), '请输入卡密'); return; }
+    $('btnVerify').disabled = true;
+    msg($('msgLogin'), '正在验证…', 'warn');
+    try {
+      const v = await V5C.verifyCard(card);
+      if (v.code !== 'Ok') {
+        msg($('msgLogin'), v.code === 'BadFormat'
+          ? '卡密格式无效（代码 F01）。应为 XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX'
+          : '验证失败，请核对后重试（代码 F02）。');
+        return;
+      }
+      currentSerial = v.serial;
+      const cl = await activate(card);
+      if (cl.outcome === 'denied') {
+        msg($('msgLogin'), '云端授权校验未通过（代码 F06' + (cl.code ? ' · ' + cl.code : '') + '）' +
+          (cl.msg ? '\n' + cl.msg : ''));
+        return;
+      }
+      if (cl.outcome !== 'ok') { msg($('msgLogin'), cl.msg || '验证失败'); return; }
+      setRoam(!!cl.roaming);
+      if ($('remember').checked) localStorage.setItem('v5web_card', card);
+      else localStorage.removeItem('v5web_card');
+      hide($('pageLogin')); show($('pageWork'));
+      msg($('msgWork'), '认证通过 · 设备绑定校验完成' + (cl.roaming ? '（网吧漫游中）' : ''), 'ok');
+      const h = await loadSavedDir();
+      if (h) {
+        const ok = await h.queryPermission({ mode: 'readwrite' });
+        $('dirBox').textContent = (ok === 'granted' ? '已记住游戏目录：' : '已记住游戏目录（需重新授权）：') + h.name;
+      }
+    } catch (e) {
+      msg($('msgLogin'), '验证失败：' + (e && e.message || e));
+    } finally {
+      $('btnVerify').disabled = false;
+    }
+  });
+
+  $('btnUnbind').addEventListener('click', async () => {
+    const card = $('cardInput').value.trim().toUpperCase();
+    if (!card) { msg($('msgLogin'), '请先输入卡密'); return; }
+    if (!confirm('确定解绑当前设备吗？\n\n每张卡每天最多解绑 2 次。')) return;
+    $('btnUnbind').disabled = true;
+    try {
+      const r = await unbindCloud(card);
+      if (r.ok) msg($('msgLogin'), '解绑成功！今日剩余解绑次数：' + (r.left != null ? r.left : '?') + ' 次。', 'ok');
+      else msg($('msgLogin'), '解绑失败：' + (r.msg || '请稍后重试') + (r.code ? '（' + r.code + '）' : ''));
+    } catch (e) { msg($('msgLogin'), '连接失败：' + e.message); }
+    finally { $('btnUnbind').disabled = false; }
+  });
+
+  $('btnPick').addEventListener('click', async () => {
+    try {
+      const h = await pickDir();
+      $('dirBox').textContent = '已选择游戏目录：' + h.name;
+      msg($('msgWork'), '目录已就绪，可以一键安全启动', 'ok');
+    } catch (e) { msg($('msgWork'), e.message || '选择失败'); }
+  });
+  $('btnRePick').addEventListener('click', async () => {
+    try {
+      await idbDel('dir');
+      const h = await pickDir();
+      $('dirBox').textContent = '已选择游戏目录：' + h.name;
+      msg($('msgWork'), '目录已更新', 'ok');
+    } catch (e) { msg($('msgWork'), e.message || '选择失败'); }
+  });
+
+  let deployed = false;
+  $('btnDeploy').addEventListener('click', async () => {
+    stopTimers();
+    phase = 'deploy';
+    $('btnDeploy').disabled = true;
+    msg($('msgWork'), '正在下载并部署配置…', 'warn');
+    try {
+      if (!dirHandle) await pickDir();
+      const r = await deploy();
+      deployed = true;
+      $('btnDone').disabled = false;
+      msg($('msgWork'), '部署成功 · Config/Linux/TickTaskWhiteList.ini' + (r.hadBackup ? '（已备份原配置）' : ''), 'ok');
+      let left = MANUAL_SEC;
+      showMon('★ 请立即手动启动游戏 ★', '剩余 ' + left + ' 秒（' + Math.round(USE_SEC / 60) + ' 分钟后自动收回配置）');
+      cdTimer = setInterval(() => {
+        left--;
+        if (left > 0) {
+          $('monCd').textContent = '剩余 ' + left + ' 秒（' + Math.round(USE_SEC / 60) + ' 分钟后自动收回配置）';
+          return;
+        }
+        clearInterval(cdTimer); cdTimer = null;
+        let useLeft = USE_SEC;
+        const mmss = (s) => Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+        $('monTitle').textContent = '游戏进行中';
+        $('monTitle').className = 'big stop';
+        $('monCd').textContent = '配置有效 · 剩余 ' + mmss(useLeft) + '（到点自动收回）';
+        cdTimer = setInterval(async () => {
+          useLeft--;
+          if (useLeft > 0) { $('monCd').textContent = '配置有效 · 剩余 ' + mmss(useLeft) + '（到点自动收回）'; return; }
+          clearInterval(cdTimer); cdTimer = null;
+          const out = await cleanup();
+          deployed = false;
+          $('btnDone').disabled = true;
+          closePage('使用时间到 · ' + out);
+        }, 1000);
+      }, 1000);
+    } catch (e) {
+      msg($('msgWork'), '部署失败：' + (e && e.message || e));
+    } finally {
+      $('btnDeploy').disabled = false;
+    }
+  });
+
+  $('btnDone').addEventListener('click', async () => {
+    stopTimers();
+    const out = await cleanup();
+    deployed = false;
+    $('btnDone').disabled = true;
+    closePage(out);
+  });
+
+  $('btnBack').addEventListener('click', () => {
+    stopTimers();
+    hide($('pageWork')); show($('pageLogin'));
+    msg($('msgWork'), '', '');
+  });
+
+  window.addEventListener('beforeunload', (e) => {
+    if (deployed) { e.preventDefault(); e.returnValue = ''; }
+  });
+})();
+</script>
+</body>
+</html>
