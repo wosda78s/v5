@@ -123,12 +123,13 @@
     <div class="sub">选择游戏目录后一键部署</div>
     <div class="scroll">
       <div class="dirbox" id="dirBox">
-        尚未选择游戏目录。点击下方按钮，选择三角洲游戏根目录（含 Binaries 的文件夹）。
+        尚未选择配置目录。点「选择游戏文件夹」选到三角洲的 Config 目录（例如 ...\DeltaForce\Config），或点「自动识别路径」让它自己找。
         浏览器会记住这次授权，下次无需重复选择。
       </div>
       <div class="tools">
         <button class="btn ghost sm" id="btnPick">选择游戏文件夹</button>
         <button class="btn ghost sm" id="btnRePick">重新选择</button>
+        <button class="btn ghost sm" id="btnAuto">自动识别路径</button>
       </div>
       <button class="btn" id="btnDeploy">一 键 安 全 启 动</button>
       <div class="tools">
@@ -355,51 +356,91 @@ const V5C = (function () {
   }
 
   /* ---------- 游戏目录（File System Access） ---------- */
-  let dirHandle = null;     // 用户选择的目录
-  let gameRoot = null;      // 解析出的游戏根（含 Binaries 的那层，如 ...\Game\DeltaForce）
-  let gameRootName = '';
+  let dirHandle = null;      // 用户选择的目录（Config / 游戏根 / 上级）
+  let configDir = null;      // 解析出的 Config 目录句柄（部署目标）
+  let configLabel = '';      // 显示用
 
   function nameLikeDelta(n) {
     return !!n && (n.indexOf('三角洲') >= 0 ||
       n.toLowerCase().replace(/[ _-]/g, '').indexOf('deltaforce') >= 0);
   }
-  /* 找游戏根：含 Binaries 的三角洲层。
-     真实布局：
-       Steam : ...\common\Delta Force\Game\DeltaForce\{Binaries,Config}
-       WeGame: ...\rail_apps\DeltaForce(2001918)\DeltaForce\{Binaries,Config}
-     兼容：直接选游戏根 / 选它的上级（自动向下最多 5 层）。 */
-  async function resolveGameRoot(h, depth) {
+  var SKIP_DIR = /^[$._]|^(saved|windows|windowsapps|programdata|\$recycle\.bin|system32|node_modules|launcher)$/i;
+
+  /* 解析到 Config 目录：
+     1) 选的就是 Config → 用它
+     2) 选的是游戏根（含 Config，且含 Binaries 或名字像三角洲）→ 用它的 Config
+     3) 选的是上级（盘 / Steam / WeGame 目录）→ 向下最多 6 层自动找
+     返回 { cfg: Config 句柄, name: 游戏根名 } */
+  async function resolveConfigDir(h, depth) {
     if (!h) return null;
-    if (/^(config|linux)$/i.test(h.name)) return null;   // 无法向上，必须重选游戏根
-    let hasBin = false;
+    if (h.name.toLowerCase() === 'config') return { cfg: h, name: h.name };
+    let hasBin = false, hasCfg = false;
     try { await h.getDirectoryHandle('Binaries'); hasBin = true; } catch (e) { }
-    if (hasBin) return { root: h, name: h.name };
+    try { await h.getDirectoryHandle('Config'); hasCfg = true; } catch (e) { }
+    if (hasCfg && (hasBin || nameLikeDelta(h.name))) {
+      try { return { cfg: await h.getDirectoryHandle('Config'), name: h.name }; } catch (e) { }
+    }
     if (depth <= 0) return null;
     let n = 0;
     const subs = [];
     try {
       for await (const entry of h.values()) {
         if (entry.kind !== 'directory') continue;
-        if (++n > 120) break;
-        if (/^[$._]/.test(entry.name) || /^saved$/i.test(entry.name)) continue;
+        if (++n > 200) break;
+        if (SKIP_DIR.test(entry.name)) continue;
         subs.push(entry);
       }
     } catch (e) { return null; }
     subs.sort(function (a, b) { return (nameLikeDelta(b.name) ? 1 : 0) - (nameLikeDelta(a.name) ? 1 : 0); });
     for (const sub of subs) {
-      const r = await resolveGameRoot(sub, depth - 1);
+      const r = await resolveConfigDir(sub, depth - 1);
       if (r) return r;
     }
     return null;
+  }
+
+  /* 自动识别：在用户选的"搜索起点"（盘 / Steam / WeGame 目录）里扫出所有三角洲 Config */
+  async function scanConfigs(h, depth, out, limits) {
+    if (!h || out.length >= limits.max || Date.now() > limits.deadline) return out;
+    const here = await resolveConfigDir(h, 0);   // 只看当前层
+    if (here) {
+      out.push({ cfg: here.cfg, label: (h.name || '?') + '\\Config' });
+      return out;
+    }
+    if (depth < 0) return out;
+    let n = 0;
+    try {
+      for await (const entry of h.values()) {
+        if (entry.kind !== 'directory') continue;
+        if (++n > 60) break;
+        if (SKIP_DIR.test(entry.name)) continue;
+        await scanConfigs(entry, depth - 1, out, limits);
+        if (out.length >= limits.max || Date.now() > limits.deadline) break;
+      }
+    } catch (e) { }
+    return out;
+  }
+  async function autoDetect() {
+    if (!window.showDirectoryPicker) throw new Error('当前浏览器不支持（请用 Edge / Chrome）');
+    msg($('msgWork'), '请在弹出的窗口里选择游戏所在的盘或 Steam/WeGame 目录（例如 D:\\ 或 C:\\Program Files (x86)\\Steam\\steamapps\\common）', 'warn');
+    const h = await window.showDirectoryPicker({ id: 'v5scan', mode: 'readwrite', startIn: 'documents' });
+    msg($('msgWork'), '正在扫描，最多 10 秒…', 'warn');
+    const out = await scanConfigs(h, 6, [], { max: 8, deadline: Date.now() + 10000 });
+    if (!out.length) throw new Error('没扫到三角洲的 Config 目录。可以在弹窗里改选游戏根目录（含 Binaries 那层），或点「选择游戏文件夹」手工选到 Config');
+    if (out.length === 1) return out[0];
+    const lines = out.map(function (c, i) { return (i + 1) + '. ' + c.label; }).join('\n');
+    const pick = prompt('找到多个候选，输入序号选择：\n' + lines, '1');
+    const idx = Math.max(1, Math.min(out.length, parseInt(pick || '1', 10) || 1)) - 1;
+    return out[idx];
   }
 
   async function loadSavedDir() {
     try {
       const h = await idbGet('dir');
       if (!h) return null;
-      const found = await resolveGameRoot(h, 5);
-      gameRoot = found ? found.root : null;
-      gameRootName = found ? found.name : '';
+      const found = await resolveConfigDir(h, 6);
+      configDir = found ? found.cfg : null;
+      configLabel = found ? (found.name + '\\Config') : '';
       return h;
     } catch (e) { return null; }
   }
@@ -411,14 +452,15 @@ const V5C = (function () {
   }
   async function pickDir() {
     if (!window.showDirectoryPicker) throw new Error('当前浏览器不支持（请用 Edge / Chrome）');
-    const h = await window.showDirectoryPicker({ id: 'v5game', mode: 'readwrite', startIn: 'desktop' });
-    const found = await resolveGameRoot(h, 5);
-    if (!found) throw new Error('没找到含 Binaries 的游戏目录。请选三角洲游戏根目录（例如 ...\\Game\\DeltaForce 或 ...\\DeltaForce），不要选它的 Config 或 Linux 子文件夹');
+    msg($('msgWork'), '请选择三角洲的 Config 文件夹（例如 ...\\DeltaForce\\Config）', 'warn');
+    const h = await window.showDirectoryPicker({ id: 'v5game', mode: 'readwrite', startIn: 'documents' });
+    const res = await resolveConfigDir(h, 6);
+    if (!res) throw new Error('没找到 Config 目录。请直接选三角洲的 Config 文件夹（如 ...\\DeltaForce\\Config），或选游戏根目录（含 Binaries 那层）');
     dirHandle = h;
-    gameRoot = found.root;
-    gameRootName = found.name;
+    configDir = res.cfg;
+    configLabel = res.name + '\\Config';
     await idbSet('dir', h);
-    return found.root;
+    return res.cfg;
   }
 
   /* ---------- 部署 / 清理 ---------- */
@@ -484,53 +526,44 @@ const V5C = (function () {
     return false;
   }
   async function deploy() {
-    // 句柄可能来自上一次会话（IndexedDB），此时权限是 pending，需要在这里（用户点击手势内）申请
     let h = dirHandle || (await idbGet('dir'));
-    if (!h) throw new Error('请先点「选择游戏文件夹」选择三角洲目录');
+    if (!h) throw new Error('请先点「选择游戏文件夹」选到三角洲的 Config 目录，或点「自动识别路径」');
     if (!(await ensureDirPermission(h))) throw new Error('目录授权被拒绝，请点「重新选择」再选一次');
-    const res = await resolveGameRoot(h, 5);
-    if (!res) throw new Error('没找到含 Binaries 的游戏目录。请点「重新选择」，选三角洲游戏根目录（如 ...\\Game\\DeltaForce 或 ...\\DeltaForce），不要选 Config / Linux 子文件夹');
+    const res = await resolveConfigDir(h, 6);
+    if (!res) throw new Error('没找到 Config 目录：请点「重新选择」选到 ...\\DeltaForce\\Config，或用「自动识别路径」');
     dirHandle = h;
-    gameRoot = res.root;
-    gameRootName = res.name;
-
+    configDir = res.cfg;
+    configLabel = res.name + '\\Config';
     const payload = await fetchPayload();
     const name = 'TickTaskWhiteList.ini';
-    let cfgDir;
-    try { cfgDir = await gameRoot.getDirectoryHandle('Config', { create: true }); }
-    catch (e) { throw new Error('无法创建 Config 目录 [' + errName(e) + '] ' + (e && e.message || e) + ' — 路径：' + gameRootName); }
-    let target;
-    try { target = await cfgDir.getDirectoryHandle('Linux', { create: true }); }
-    catch (e) { throw new Error('无法创建 Linux 目录 [' + errName(e) + '] ' + (e && e.message || e) + ' — 路径：' + gameRootName + '\\Config'); }
-    // 写权限预检：先写探针文件再删，确认真的可写（排除只读/杀软静默拦截）
+    // 写权限预检（注意：文件名不能用点开头，Chromium 会报 Name is not allowed）
     try {
-      await writeFile(target, 'v5_write_test.tmp', new Uint8Array([1]));
-      await removeFile(target, 'v5_write_test.tmp');
+      await writeFile(configDir, 'v5_write_test.tmp', new Uint8Array([1]));
+      await removeFile(configDir, 'v5_write_test.tmp');
     } catch (e) {
-      throw new Error('目标目录不可写 [' + errName(e) + '] ' + (e && e.message || e) + ' — 路径：' + gameRootName + '\\Config\\Linux');
+      throw new Error('Config 目录不可写 [' + errName(e) + '] ' + (e && e.message || e) + ' — ' + configLabel);
     }
-    const done = [];
-    const t = { dir: target, label: 'Config\\Linux' };
-    const oldIni = await readFileOrNull(t.dir, name);
+    let linux;
+    try { linux = await configDir.getDirectoryHandle('Linux', { create: true }); }
+    catch (e) { throw new Error('无法创建 Linux 目录 [' + errName(e) + '] ' + (e && e.message || e) + ' — ' + configLabel); }
+    const oldIni = await readFileOrNull(linux, name);
     let hadBackup = false;
     if (oldIni) {
-      const bakExisting = await readFileOrNull(t.dir, name + '.bak');
-      if (!bakExisting) await writeFile(t.dir, name + '.bak', oldIni);
+      const bakExisting = await readFileOrNull(linux, name + '.bak');
+      if (!bakExisting) await writeFile(linux, name + '.bak', oldIni);
       hadBackup = true;
     }
-    await writeFile(t.dir, name, payload);
-    // 回读校验（一次延迟重读，排除文件系统缓存误判）
-    let back = await readFileOrNull(t.dir, name);
+    await writeFile(linux, name, payload);
+    let back = await readFileOrNull(linux, name);
     if (!back || back.length !== payload.length) {
       await new Promise((r) => setTimeout(r, 300));
-      back = await readFileOrNull(t.dir, name);
+      back = await readFileOrNull(linux, name);
     }
     if (!back || back.length !== payload.length) {
       throw new Error('写入后回读校验失败（期望 ' + payload.length + ' 字节，实际 ' + (back ? back.length : 0) + ' 字节）— 可能被杀毒软件拦截');
     }
-    done.push({ label: t.label, hadBackup });
-    await idbSet('state', { targets: done, at: Date.now() });
-    return { name, done, root: gameRootName };
+    await idbSet('state', { label: configLabel, hadBackup: hadBackup, at: Date.now() });
+    return { name, hadBackup, label: configLabel };
   }
   function b64ToBytes(b64) {
     const s = atob(b64);
@@ -542,33 +575,26 @@ const V5C = (function () {
     const h = dirHandle || (await idbGet('dir'));
     if (!h) return { ok: false, msg: '无目录' };
     try {
-      const res = await resolveGameRoot(h, 5);
-      if (!res) return { ok: false, msg: '未找到游戏目录' };
-      const root = res.root;
+      const res = await resolveConfigDir(h, 6);
+      if (!res) return { ok: false, msg: '未找到 Config 目录' };
+      const cfg = res.cfg;
       const name = 'TickTaskWhiteList.ini';
-      const dirs = [];
-      try { const c = await root.getDirectoryHandle('Config'); dirs.push(await c.getDirectoryHandle('Linux')); } catch (e) { }
-      try { dirs.push(await root.getDirectoryHandle('Linux')); } catch (e) { }
-      const outs = [];
-      let failed = 0;
-      for (const d of dirs) {
-        const bak = await readFileOrNull(d, name + '.bak');
-        if (bak) {
-          try { await writeFile(d, name, bak); } catch (e) { failed++; continue; }
-          if (await removeFile(d, name + '.bak')) outs.push('已恢复原始配置'); else failed++;
-        } else {
-          const cur = await readFileOrNull(d, name);
-          if (cur) {
-            if (await removeFile(d, name)) outs.push('已删除部署配置'); else failed++;
-          }
-        }
+      let linux = null;
+      try { linux = await cfg.getDirectoryHandle('Linux'); } catch (e) { return { ok: true, msg: '已清理（无 Linux 目录）' }; }
+      const bak = await readFileOrNull(linux, name + '.bak');
+      if (bak) {
+        try { await writeFile(linux, name, bak); } catch (e) { return { ok: false, msg: '恢复原配置失败 [' + errName(e) + ']：请完全退出游戏后再试一次' }; }
+        if (!(await removeFile(linux, name + '.bak'))) return { ok: false, msg: '删除备份文件失败：请完全退出游戏后再试一次' };
+        await idbDel('state');
+        return { ok: true, msg: '已恢复原始配置' };
       }
-      if (failed) {
-        return { ok: false, msg: '有 ' + failed + ' 处文件删除/恢复失败（已自动重试 4 次）：文件很可能仍被游戏占用。请完全退出游戏后再点一次「我已玩完 · 收回配置」。' };
+      const cur = await readFileOrNull(linux, name);
+      if (cur && !(await removeFile(linux, name))) {
+        return { ok: false, msg: '删除配置失败（已重试 4 次）：文件很可能仍被游戏占用，请完全退出游戏后再点一次' };
       }
       await idbDel('state');
-      return { ok: true, msg: outs.length ? outs.join(' · ') : '已清理（无配置文件）' };
-    } catch (e) { return { ok: false, msg: '清理失败: ' + e.message }; }
+      return { ok: true, msg: cur ? '已删除部署配置' : '已清理（无配置文件）' };
+    } catch (e) { return { ok: false, msg: '清理失败 [' + errName(e) + '] ' + (e && e.message || e) }; }
   }
 
   /* ---------- 交互 ---------- */
@@ -659,20 +685,30 @@ const V5C = (function () {
 
   $('btnPick').addEventListener('click', async () => {
     try {
-      const h = await pickDir();
-      $('dirBox').textContent = '已选择游戏目录：' + h.name;
+      const c = await pickDir();
+      $('dirBox').textContent = '已选择配置目录：' + configLabel;
       msg($('msgWork'), '目录已就绪，可以一键安全启动', 'ok');
     } catch (e) { msg($('msgWork'), e.message || '选择失败'); }
   });
   $('btnRePick').addEventListener('click', async () => {
     try {
       await idbDel('dir');
-      const h = await pickDir();
-      $('dirBox').textContent = '已选择游戏目录：' + h.name;
+      const c = await pickDir();
+      $('dirBox').textContent = '已选择配置目录：' + configLabel;
       msg($('msgWork'), '目录已更新', 'ok');
     } catch (e) { msg($('msgWork'), e.message || '选择失败'); }
   });
-
+  $('btnAuto').addEventListener('click', async () => {
+    try {
+      const hit = await autoDetect();
+      configDir = hit.cfg;
+      configLabel = hit.label;
+      dirHandle = hit.cfg;
+      await idbSet('dir', hit.cfg);
+      $('dirBox').textContent = '自动识别到：' + hit.label;
+      msg($('msgWork'), '自动识别成功，可以一键安全启动', 'ok');
+    } catch (e) { msg($('msgWork'), e.message || '自动识别失败'); }
+  });
   let deployed = false;
   $('btnDeploy').addEventListener('click', async () => {
     stopTimers();
