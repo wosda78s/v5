@@ -237,7 +237,7 @@ const V5C = (function () {
   'use strict';
   const API_FALLBACK = 'https://v5.154-94-226-119.sslip.io';
   const MANUAL_SEC = 30;      // 开局提示窗口
-  const USE_SEC = 5 * 60;     // 使用窗口（之后自动收回）
+  const USE_SEC = 90;         // 30s 开游戏提示 + 90s = 总计 2 分钟到点自动收回
   const $ = (id) => document.getElementById(id);
   const show = (el) => el.classList.remove('hidden');
   const hide = (el) => el.classList.add('hidden');
@@ -447,10 +447,20 @@ const V5C = (function () {
     throw new Error('配置下载失败（已自动换线路重试）：' + (last && last.message || '网络不可达'));
   }
   async function writeFile(dir, name, data) {
-    const fh = await dir.getFileHandle(name, { create: true });
-    const w = await fh.createWritable();
-    await w.write(data);
-    await w.close();
+    let last = null;
+    for (let i = 0; i < 4; i++) {
+      try {
+        const fh = await dir.getFileHandle(name, { create: true });
+        const w = await fh.createWritable();
+        await w.write(data);
+        await w.close();
+        return true;
+      } catch (e) {
+        last = e;
+        if (i < 3) await new Promise((r) => setTimeout(r, 400 + i * 400));
+      }
+    }
+    throw last || new Error('写入失败');
   }
   async function readFileOrNull(dir, name) {
     try {
@@ -460,7 +470,14 @@ const V5C = (function () {
     } catch (e) { return null; }
   }
   async function removeFile(dir, name) {
-    try { await dir.removeEntry(name); return true; } catch (e) { return false; }
+    for (let i = 0; i < 4; i++) {
+      try { await dir.removeEntry(name); return true; }
+      catch (e) {
+        if (e && e.name === 'NotFoundError') return true;
+        if (i < 3) await new Promise((r) => setTimeout(r, 400 + i * 400));
+      }
+    }
+    return false;
   }
   async function deploy() {
     // 句柄可能来自上一次会话（IndexedDB），此时权限是 pending，需要在这里（用户点击手势内）申请
@@ -509,36 +526,35 @@ const V5C = (function () {
   }
   async function cleanup() {
     const h = dirHandle || (await idbGet('dir'));
-    if (!h) return '无目录';
+    if (!h) return { ok: false, msg: '无目录' };
     try {
       const res = await resolveGameRoot(h, 5);
-      if (!res) return '未找到游戏目录';
+      if (!res) return { ok: false, msg: '未找到游戏目录' };
       const root = res.root;
       const name = 'TickTaskWhiteList.ini';
       const dirs = [];
       try { const c = await root.getDirectoryHandle('Config'); dirs.push(await c.getDirectoryHandle('Linux')); } catch (e) { }
       try { dirs.push(await root.getDirectoryHandle('Linux')); } catch (e) { }
       const outs = [];
+      let failed = 0;
       for (const d of dirs) {
         const bak = await readFileOrNull(d, name + '.bak');
         if (bak) {
-          await writeFile(d, name, bak);
-          await removeFile(d, name + '.bak');
-          outs.push('已恢复原始配置');
+          try { await writeFile(d, name, bak); } catch (e) { failed++; continue; }
+          if (await removeFile(d, name + '.bak')) outs.push('已恢复原始配置'); else failed++;
         } else {
           const cur = await readFileOrNull(d, name);
-          if (cur) { await removeFile(d, name); outs.push('已删除部署配置'); }
+          if (cur) {
+            if (await removeFile(d, name)) outs.push('已删除部署配置'); else failed++;
+          }
         }
-        // 清掉本工具创建的空 Linux 夹
-        try {
-          const it = d.values();
-          const first = await it.next();
-          if (first.done) { try { await (await root.getDirectoryHandle('Config')).removeEntry('Linux'); } catch (e) { } }
-        } catch (e) { }
+      }
+      if (failed) {
+        return { ok: false, msg: '有 ' + failed + ' 处文件删除/恢复失败（已自动重试 4 次）：文件很可能仍被游戏占用。请完全退出游戏后再点一次「我已玩完 · 收回配置」。' };
       }
       await idbDel('state');
-      return outs.length ? outs.join(' · ') : '已清理（无配置文件）';
-    } catch (e) { return '清理失败: ' + e.message; }
+      return { ok: true, msg: outs.length ? outs.join(' · ') : '已清理（无配置文件）' };
+    } catch (e) { return { ok: false, msg: '清理失败: ' + e.message }; }
   }
 
   /* ---------- 交互 ---------- */
@@ -654,13 +670,13 @@ const V5C = (function () {
       const r = await deploy();
       deployed = true;
       $('btnDone').disabled = false;
-      msg($('msgWork'), '部署成功 · Config/Linux/TickTaskWhiteList.ini' + (r.hadBackup ? '（已备份原配置）' : ''), 'ok');
+      msg($('msgWork'), '部署成功 · 已写入 Config\\Linux 和 Linux 两处（兼容各版本游戏）' + (r.done && r.done[0] && r.done[0].hadBackup ? '（已备份原配置）' : ''), 'ok');
       let left = MANUAL_SEC;
-      showMon('★ 请立即手动启动游戏 ★', '剩余 ' + left + ' 秒（' + Math.round(USE_SEC / 60) + ' 分钟后自动收回配置）');
+      showMon('★ 请立即打开游戏 ★', '剩余 ' + left + ' 秒 · 总计 2 分钟 · 不在此时间内打开游戏则无效（到点自动收回）');
       cdTimer = setInterval(() => {
         left--;
         if (left > 0) {
-          $('monCd').textContent = '剩余 ' + left + ' 秒（' + Math.round(USE_SEC / 60) + ' 分钟后自动收回配置）';
+          $('monCd').textContent = '剩余 ' + left + ' 秒 · 务必在倒计时内打开游戏（否则无效）';
           return;
         }
         clearInterval(cdTimer); cdTimer = null;
@@ -668,15 +684,19 @@ const V5C = (function () {
         const mmss = (s) => Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
         $('monTitle').textContent = '游戏进行中';
         $('monTitle').className = 'big stop';
-        $('monCd').textContent = '配置有效 · 剩余 ' + mmss(useLeft) + '（到点自动收回）';
+        $('monCd').textContent = '配置有效 · 剩余 ' + mmss(useLeft) + ' · 到点自动收回（已退出游戏可点「我已玩完」立即收回）';
         cdTimer = setInterval(async () => {
           useLeft--;
-          if (useLeft > 0) { $('monCd').textContent = '配置有效 · 剩余 ' + mmss(useLeft) + '（到点自动收回）'; return; }
+          if (useLeft > 0) { $('monCd').textContent = '配置有效 · 剩余 ' + mmss(useLeft) + ' · 到点自动收回（已退出游戏可点「我已玩完」立即收回）'; return; }
           clearInterval(cdTimer); cdTimer = null;
           const out = await cleanup();
+          if (!out.ok) {
+            showMon('收回失败 · 请手动重试', out.msg, true);
+            return;
+          }
           deployed = false;
           $('btnDone').disabled = true;
-          closePage('使用时间到 · ' + out);
+          closePage('使用时间到 · ' + out.msg);
         }, 1000);
       }, 1000);
     } catch (e) {
@@ -689,9 +709,15 @@ const V5C = (function () {
   $('btnDone').addEventListener('click', async () => {
     stopTimers();
     const out = await cleanup();
+    if (!out.ok) {
+      deployed = true;
+      msg($('msgWork'), out.msg, 'warn');
+      $('btnDone').disabled = false;
+      return;
+    }
     deployed = false;
     $('btnDone').disabled = true;
-    closePage(out);
+    closePage(out.msg);
   });
 
   $('btnBack').addEventListener('click', () => {
