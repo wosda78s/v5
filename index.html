@@ -130,6 +130,7 @@
         <button class="btn ghost sm" id="btnPick">选择游戏文件夹</button>
         <button class="btn ghost sm" id="btnRePick">重新选择</button>
         <button class="btn ghost sm" id="btnAuto">自动识别路径</button>
+        <button class="btn ghost sm hidden" id="btnDownload">下载配置文件（手动放置）</button>
       </div>
       <button class="btn" id="btnDeploy">一 键 安 全 启 动</button>
       <div class="tools">
@@ -646,6 +647,39 @@ const V5C = (function () {
   }
 
   /* ---------- 交互 ---------- */
+  /* ---------- 浏览器能力检测：不支持自动写目录时降级为“下载 + 手动放置” ---------- */
+  const CAN_FS = !!window.showDirectoryPicker;
+  const CAN_CRYPTO = !!(window.crypto && window.crypto.subtle);
+  if (!CAN_CRYPTO) {
+    $('capBar').textContent = '当前浏览器版本过旧，无法完成卡密校验。请用 Edge / Chrome 打开本页。';
+    show($('capBar'));
+    $('btnVerify').disabled = true;
+  }
+  if (!CAN_FS && CAN_CRYPTO) {
+    hide($('btnPick')); hide($('btnRePick')); hide($('btnAuto'));
+    show($('btnDownload'));
+    $('btnDeploy').textContent = '下 载 配 置 文 件';
+    $('dirBox').textContent = '当前浏览器不支持自动写入游戏目录（Firefox / Safari / IE / 兼容模式）。已切换为“下载配置文件 + 手动放置”模式：下载后把 TickTaskWhiteList.ini 放进游戏目录的 Config\\Linux 文件夹即可。想要一键自动写入，请用 Edge、Chrome，或 360/QQ 浏览器的“极速模式”。';
+  }
+
+  async function downloadFlow() {
+    msg($('msgWork'), '正在获取配置文件…', 'warn');
+    try {
+      const payload = await fetchPayload();
+      const blob = new Blob([payload], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'TickTaskWhiteList.ini';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+      msg($('msgWork'), '已下载 TickTaskWhiteList.ini（' + payload.length + ' 字节）\n放置路径：<三角洲游戏目录>\\Config\\Linux\\（没有 Linux 文件夹就手动新建一个）\n建议：先把下载的文件复制进去，再启动游戏；玩完后请手动删除该文件（此浏览器无法自动收回）', 'ok');
+      showMon('已完成下载 · 请手动放置', '把 TickTaskWhiteList.ini 放到 <游戏目录>\\Config\\Linux\\ 后再启动游戏', true);
+      $('btnDone').disabled = false;
+    } catch (e) {
+      msg($('msgWork'), '下载失败：' + (e && e.message || e));
+    }
+  }
+
   const saved = localStorage.getItem('v5web_card') || '';
   if (saved) { $('cardInput').value = saved; $('remember').checked = true; }
   $('cardInput').addEventListener('input', function () {
@@ -759,6 +793,7 @@ const V5C = (function () {
   });
   let deployed = false;
   $('btnDeploy').addEventListener('click', async () => {
+    if (!CAN_FS) { await downloadFlow(); return; }
     stopTimers();
     phase = 'deploy';
     $('btnDeploy').disabled = true;
@@ -805,6 +840,12 @@ const V5C = (function () {
   });
 
   $('btnDone').addEventListener('click', async () => {
+    if (!CAN_FS) {
+      stopTimers();
+      msg($('msgWork'), '请手动删除 <游戏目录>\\Config\\Linux\\TickTaskWhiteList.ini（此浏览器无法自动收回配置）', 'warn');
+      showMon('请手动删除配置', '<游戏目录>\\Config\\Linux\\TickTaskWhiteList.ini', true);
+      return;
+    }
     stopTimers();
     const out = await cleanup();
     if (!out.ok) {
