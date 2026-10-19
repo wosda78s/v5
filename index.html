@@ -514,7 +514,18 @@ const V5C = (function () {
     let last = null;
     for (let i = 0; i < 4; i++) {
       try {
-        const fh = await dir.getFileHandle(name, { create: true });
+        // 先按"已存在"打开（很多机器上已有旧 ini）；只有 NotFound 才走 create。
+        // 某些浏览器/系统环境下 create 分支会被拒（Name is not allowed），open 分支正常。
+        let fh = null;
+        try {
+          fh = await dir.getFileHandle(name);
+        } catch (eOpen) {
+          if (eOpen && eOpen.name === 'NotFoundError') {
+            fh = await dir.getFileHandle(name, { create: true });
+          } else {
+            throw eOpen;
+          }
+        }
         const w = await fh.createWritable();
         await w.write(data);
         await w.close();
@@ -554,7 +565,7 @@ const V5C = (function () {
     step = 'resolved';
     dirHandle = h;
     configDir = res.cfg;
-    configLabel = res.name + '\\Config';
+    configLabel = res.direct ? 'Config' : (res.name + '\\Config');
     const payload = await fetchPayload();
     const name = 'TickTaskWhiteList.ini';
     // 不写探针文件（避免任何非法文件名风险），直接用写入+回读校验确认落盘
