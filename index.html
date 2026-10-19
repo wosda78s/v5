@@ -350,13 +350,47 @@ const V5C = (function () {
 
   /* ---------- 游戏目录（File System Access） ---------- */
   let dirHandle = null;
+  let gameRootName = '';
+
+  function nameLikeDelta(n) {
+    return !!n && (n.indexOf('三角洲') >= 0 ||
+      n.toLowerCase().replace(/[ _-]/g, '').indexOf('deltaforce') >= 0);
+  }
+  /* 在所选目录内向下（最多 depth 层）找"含 Binaries 的三角洲层"。
+     三角洲布局举例：
+       Steam:  <库>\steamapps\common\Delta Force\Game\DeltaForce\Binaries
+       WeGame: <WeGameApps>\三角洲行动\Binaries
+     所以既接受"已经含 Binaries 的层"，也接受它的上一级。 */
+  async function findGameRoot(h, depth) {
+    if (!h) return null;
+    try { await h.getDirectoryHandle('Binaries'); return { root: h, name: h.name, direct: true }; } catch (e) { }
+    if (depth <= 0) return null;
+    let n = 0;
+    const subs = [];
+    try {
+      for await (const entry of h.values()) {
+        if (entry.kind !== 'directory') continue;
+        if (++n > 120) break;
+        if (/^[$._]/.test(entry.name) || /^saved$/i.test(entry.name)) continue;
+        subs.push(entry);
+      }
+    } catch (e) { return null; }
+    // 优先深入"名字像三角洲"的子目录
+    subs.sort(function (a, b) { return (nameLikeDelta(b.name) ? 1 : 0) - (nameLikeDelta(a.name) ? 1 : 0); });
+    for (const sub of subs) {
+      const r = await findGameRoot(sub, depth - 1);
+      if (r) return r;
+    }
+    return null;
+  }
+
   async function loadSavedDir() {
     try {
       const h = await idbGet('dir');
       if (!h) return null;
-      const p = await h.queryPermission({ mode: 'readwrite' });
-      if (p === 'granted') { dirHandle = h; return h; }
-      dirHandle = h;
+      const found = await findGameRoot(h, 4);
+      dirHandle = found ? found.root : null;
+      gameRootName = found ? found.name : '';
       return h;
     } catch (e) { return null; }
   }
@@ -369,12 +403,12 @@ const V5C = (function () {
   async function pickDir() {
     if (!window.showDirectoryPicker) throw new Error('当前浏览器不支持（请用 Edge / Chrome）');
     const h = await window.showDirectoryPicker({ id: 'v5game', mode: 'readwrite', startIn: 'desktop' });
-    let ok = false;
-    try { await h.getDirectoryHandle('Binaries'); ok = true; } catch (e) { ok = false; }
-    if (!ok) throw new Error('请选择三角洲游戏根目录（该目录下应有 Binaries 文件夹）');
-    dirHandle = h;
-    await idbSet('dir', h);
-    return h;
+    const found = await findGameRoot(h, 4);
+    if (!found) throw new Error('这个文件夹里没找到三角洲游戏（找不到 Binaries）。请选：三角洲游戏根目录，或它的上一级（例如 Steam 的 ...\\common\\Delta Force / WeGame 的 WeGameApps\\三角洲行动）');
+    dirHandle = found.root;
+    gameRootName = found.name;
+    await idbSet('dir', dirHandle);
+    return dirHandle;
   }
 
   /* ---------- 部署 / 清理 ---------- */
@@ -404,8 +438,15 @@ const V5C = (function () {
     try { await dir.removeEntry(name); return true; } catch (e) { return false; }
   }
   async function deploy() {
-    if (!dirHandle) throw new Error('请先选择游戏文件夹');
-    if (!(await ensureDirPermission(dirHandle))) throw new Error('目录授权被拒绝，请重新选择');
+    // 句柄可能来自上一次会话（IndexedDB），此时权限是 pending，需要在这里（用户点击手势内）申请
+    let h = dirHandle || (await idbGet('dir'));
+    if (!h) throw new Error('请先点「选择游戏文件夹」选择三角洲目录');
+    if (!(await ensureDirPermission(h))) throw new Error('目录授权被拒绝，请点「重新选择」再选一次');
+    // 兼容旧版保存的"上级目录"：部署前再解析一次游戏根，保证写在正确位置
+    const root = await findGameRoot(h, 4);
+    if (!root) throw new Error('当前记住的目录里找不到三角洲游戏（Binaries），请点「重新选择」重选一次');
+    dirHandle = root.root;
+    gameRootName = root.name;
     const payload = await fetchPayload();
     const cfg = await dirHandle.getDirectoryHandle('Config', { create: true });
     let linux;
