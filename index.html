@@ -289,15 +289,21 @@ const V5C = (function () {
   let apiBase = null;
   async function ensureApi() {
     if (apiBase) return apiBase;
-    const cands = [location.origin, API_FALLBACK];
+    const cands = [];
+    // 只有同源自身能提供 /v1 时才把它放第一候选（GitHub Pages 是纯静态，没有 API）
+    if (location.protocol !== 'file:' && !/\.github\.io$/.test(location.hostname)) {
+      cands.push(location.origin);
+    }
+    cands.push(API_FALLBACK);
+    let lastErr = null;
     for (const base of cands) {
       try {
-        const r = await fetch(base + '/v1/version?ver=5.9.20', { signal: AbortSignal.timeout(5000) });
+        const r = await fetch(base + '/v1/version?ver=5.9.20', { signal: AbortSignal.timeout(6000) });
         if (r.ok) { apiBase = base; return base; }
-      } catch (e) { }
+        lastErr = new Error('HTTP ' + r.status);
+      } catch (e) { lastErr = e; }
     }
-    apiBase = location.origin;
-    return apiBase;
+    throw new Error('连不上授权服务器（网络受限或线路不通）' + (lastErr ? '：' + lastErr.message : ''));
   }
   async function cloudPost(action, fields) {
     const base = await ensureApi();
@@ -349,21 +355,30 @@ const V5C = (function () {
   }
 
   /* ---------- 游戏目录（File System Access） ---------- */
-  let dirHandle = null;
-  let gameRootName = '';
+  let dirHandle = null;      // 用户选择的目录（可能是游戏根或它的上级）
+  let deployBase = null;     // 解析出的 Config 目录句柄（部署目标）
+  let deployBaseName = '';
 
   function nameLikeDelta(n) {
     return !!n && (n.indexOf('三角洲') >= 0 ||
       n.toLowerCase().replace(/[ _-]/g, '').indexOf('deltaforce') >= 0);
   }
-  /* 在所选目录内向下（最多 depth 层）找"含 Binaries 的三角洲层"。
-     三角洲布局举例：
-       Steam:  <库>\steamapps\common\Delta Force\Game\DeltaForce\Binaries
-       WeGame: <WeGameApps>\三角洲行动\Binaries
-     所以既接受"已经含 Binaries 的层"，也接受它的上一级。 */
-  async function findGameRoot(h, depth) {
+  /* 解析"部署基底" = 游戏根下的 Config 目录（与旧客户端一致：
+     <游戏根>\Config\Linux\TickTaskWhiteList.ini）。
+     接受三种选择：
+       1) 直接选 Config 文件夹
+       2) 选游戏根（含 Binaries 或 Config 子目录，如 ...\Game\DeltaForce）
+       3) 选它们的上级（自动向下最多 5 层找，优先名字像三角洲的层）
+     真实 Steam 布局：...\common\Delta Force\Game\DeltaForce\{Binaries,Config} */
+  async function resolveDeployBase(h, depth) {
     if (!h) return null;
-    try { await h.getDirectoryHandle('Binaries'); return { root: h, name: h.name, direct: true }; } catch (e) { }
+    if (h.name.toLowerCase() === 'config') return { base: h, name: h.name };
+    let hasCfg = false, hasBin = false;
+    try { await h.getDirectoryHandle('Config'); hasCfg = true; } catch (e) { }
+    try { await h.getDirectoryHandle('Binaries'); hasBin = true; } catch (e) { }
+    if (hasCfg && (hasBin || nameLikeDelta(h.name))) {
+      return { base: await h.getDirectoryHandle('Config'), name: h.name };
+    }
     if (depth <= 0) return null;
     let n = 0;
     const subs = [];
@@ -375,10 +390,9 @@ const V5C = (function () {
         subs.push(entry);
       }
     } catch (e) { return null; }
-    // 优先深入"名字像三角洲"的子目录
     subs.sort(function (a, b) { return (nameLikeDelta(b.name) ? 1 : 0) - (nameLikeDelta(a.name) ? 1 : 0); });
     for (const sub of subs) {
-      const r = await findGameRoot(sub, depth - 1);
+      const r = await resolveDeployBase(sub, depth - 1);
       if (r) return r;
     }
     return null;
@@ -388,9 +402,9 @@ const V5C = (function () {
     try {
       const h = await idbGet('dir');
       if (!h) return null;
-      const found = await findGameRoot(h, 4);
-      dirHandle = found ? found.root : null;
-      gameRootName = found ? found.name : '';
+      const found = await resolveDeployBase(h, 5);
+      deployBase = found ? found.base : null;
+      deployBaseName = found ? found.name : '';
       return h;
     } catch (e) { return null; }
   }
@@ -403,23 +417,39 @@ const V5C = (function () {
   async function pickDir() {
     if (!window.showDirectoryPicker) throw new Error('当前浏览器不支持（请用 Edge / Chrome）');
     const h = await window.showDirectoryPicker({ id: 'v5game', mode: 'readwrite', startIn: 'desktop' });
-    const found = await findGameRoot(h, 4);
-    if (!found) throw new Error('这个文件夹里没找到三角洲游戏（找不到 Binaries）。请选：三角洲游戏根目录，或它的上一级（例如 Steam 的 ...\\common\\Delta Force / WeGame 的 WeGameApps\\三角洲行动）');
-    dirHandle = found.root;
-    gameRootName = found.name;
-    await idbSet('dir', dirHandle);
-    return dirHandle;
+    const found = await resolveDeployBase(h, 5);
+    if (!found) throw new Error('没找到游戏配置目录。请选到 ...\\Game\\DeltaForce 这一层（里面同时有 Binaries 和 Config），或直接选它的 Config 文件夹');
+    dirHandle = h;
+    deployBase = found.base;
+    deployBaseName = found.name;
+    await idbSet('dir', h);
+    return found.base;
   }
 
   /* ---------- 部署 / 清理 ---------- */
+  const PAYLOAD_GH = 'https://wosda78s.github.io/v5/ttwl_payload.dat';
   async function fetchPayload() {
-    const base = await ensureApi();
-    const r = await fetch(base + '/dl/ttwl_payload.dat', { signal: AbortSignal.timeout(120000) });
-    if (!r.ok) throw new Error('配置下载失败 HTTP ' + r.status);
-    const masked = new Uint8Array(await r.arrayBuffer());
-    const plain = await V5C.xorPayload(masked);
-    if (!(await V5C.checkPayload(plain))) throw new Error('配置校验失败（不完整或被篡改）');
-    return plain;
+    const cands = [];
+    try {
+      const base = await ensureApi();
+      cands.push(base + '/dl/ttwl_payload.dat');
+    } catch (e) { }
+    if (/\.github\.io$/.test(location.hostname)) cands.push(location.origin + '/ttwl_payload.dat');
+    if (cands.indexOf(PAYLOAD_GH) < 0) cands.push(PAYLOAD_GH);
+    let last = null;
+    for (const url of cands) {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const r = await fetch(url, { signal: AbortSignal.timeout(180000), cache: 'no-store' });
+          if (!r.ok) { last = new Error('HTTP ' + r.status + ' @ ' + url); continue; }
+          const masked = new Uint8Array(await r.arrayBuffer());
+          const plain = await V5C.xorPayload(masked);
+          if (!(await V5C.checkPayload(plain))) { last = new Error('校验失败 @ ' + url); continue; }
+          return plain;
+        } catch (e) { last = e; }
+      }
+    }
+    throw new Error('配置下载失败（已自动换线路重试）：' + (last && last.message || '网络不可达'));
   }
   async function writeFile(dir, name, data) {
     const fh = await dir.getFileHandle(name, { create: true });
@@ -442,13 +472,13 @@ const V5C = (function () {
     let h = dirHandle || (await idbGet('dir'));
     if (!h) throw new Error('请先点「选择游戏文件夹」选择三角洲目录');
     if (!(await ensureDirPermission(h))) throw new Error('目录授权被拒绝，请点「重新选择」再选一次');
-    // 兼容旧版保存的"上级目录"：部署前再解析一次游戏根，保证写在正确位置
-    const root = await findGameRoot(h, 4);
-    if (!root) throw new Error('当前记住的目录里找不到三角洲游戏（Binaries），请点「重新选择」重选一次');
-    dirHandle = root.root;
-    gameRootName = root.name;
+    const res = await resolveDeployBase(h, 5);
+    if (!res) throw new Error('没找到游戏配置目录。请点「重新选择」，选到 ...\\Game\\DeltaForce 这一层（含 Binaries 和 Config），或直接选它的 Config 文件夹');
+    dirHandle = h;
+    deployBase = res.base;
+    deployBaseName = res.name;
     const payload = await fetchPayload();
-    const cfg = await dirHandle.getDirectoryHandle('Config', { create: true });
+    const cfg = deployBase;
     let linux;
     let createdLinux = false;
     try { linux = await cfg.getDirectoryHandle('Linux'); }
@@ -476,9 +506,12 @@ const V5C = (function () {
     return out;
   }
   async function cleanup() {
-    if (!dirHandle) return '无目录';
+    const h = dirHandle || (await idbGet('dir'));
+    if (!h) return '无目录';
     try {
-      const cfg = await dirHandle.getDirectoryHandle('Config');
+      const res0 = await resolveDeployBase(h, 5);
+      if (!res0) return '未找到配置目录';
+      const cfg = res0.base;
       let linux;
       try { linux = await cfg.getDirectoryHandle('Linux'); } catch (e) { return '已清理（无配置文件）'; }
       const name = 'TickTaskWhiteList.ini';
