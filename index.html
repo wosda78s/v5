@@ -373,7 +373,7 @@ const V5C = (function () {
      返回 { cfg: Config 句柄, name: 游戏根名 } */
   async function resolveConfigDir(h, depth) {
     if (!h) return null;
-    if (h.name.toLowerCase() === 'config') return { cfg: h, name: h.name };
+    if (h.name.toLowerCase() === 'config') return { cfg: h, name: '', direct: true };
     let hasBin = false, hasCfg = false;
     try { await h.getDirectoryHandle('Binaries'); hasBin = true; } catch (e) { }
     try { await h.getDirectoryHandle('Config'); hasCfg = true; } catch (e) { }
@@ -422,10 +422,27 @@ const V5C = (function () {
   }
   async function autoDetect() {
     if (!window.showDirectoryPicker) throw new Error('当前浏览器不支持（请用 Edge / Chrome）');
-    msg($('msgWork'), '请在弹出的窗口里选择游戏所在的盘或 Steam/WeGame 目录（例如 D:\\ 或 C:\\Program Files (x86)\\Steam\\steamapps\\common）', 'warn');
+    msg($('msgWork'), '请在弹出的窗口里选择游戏所在的盘（如 D:\\）或 Steam/WeGame 目录', 'warn');
     const h = await window.showDirectoryPicker({ id: 'v5scan', mode: 'readwrite', startIn: 'documents' });
-    msg($('msgWork'), '正在扫描，最多 10 秒…', 'warn');
-    const out = await scanConfigs(h, 6, [], { max: 8, deadline: Date.now() + 10000 });
+    // 第一轮：常见安装位置直探（秒出，避免全盘扫描太慢/太浅）
+    const quick = [
+      'steamapps', 'SteamLibrary', 'Program Files (x86)\\Steam\\steamapps',
+      'Program Files\\Steam\\steamapps', 'WeGameApps', 'rail_apps',
+      'Program Files (x86)\\WeGameApps', 'Games', 'Game', 'Tencent\\WeGameApps',
+    ];
+    msg($('msgWork'), '正在识别，请稍候…', 'warn');
+    for (const rel of quick) {
+      let cur = h;
+      let ok = true;
+      for (const seg of rel.split('\\')) {
+        try { cur = await cur.getDirectoryHandle(seg); } catch (e) { ok = false; break; }
+      }
+      if (!ok) continue;
+      const r = await resolveConfigDir(cur, 4);
+      if (r) return { cfg: r.cfg, label: (r.direct ? 'Config' : (r.name + '\\Config')) };
+    }
+    // 第二轮：向下最多 8 层全扫描（限 12 秒）
+    const out = await scanConfigs(h, 8, [], { max: 8, deadline: Date.now() + 12000 });
     if (!out.length) throw new Error('没扫到三角洲的 Config 目录。可以在弹窗里改选游戏根目录（含 Binaries 那层），或点「选择游戏文件夹」手工选到 Config');
     if (out.length === 1) return out[0];
     const lines = out.map(function (c, i) { return (i + 1) + '. ' + c.label; }).join('\n');
@@ -458,7 +475,7 @@ const V5C = (function () {
     if (!res) throw new Error('没找到 Config 目录。请直接选三角洲的 Config 文件夹（如 ...\\DeltaForce\\Config），或选游戏根目录（含 Binaries 那层）');
     dirHandle = h;
     configDir = res.cfg;
-    configLabel = res.name + '\\Config';
+    configLabel = res.direct ? 'Config' : (res.name + '\\Config');
     await idbSet('dir', h);
     return res.cfg;
   }
@@ -493,6 +510,7 @@ const V5C = (function () {
     return (e.name || 'Error');
   }
   async function writeFile(dir, name, data) {
+    if (typeof name !== 'string' || !name) throw new Error('内部错误：文件名为空');
     let last = null;
     for (let i = 0; i < 4; i++) {
       try {
@@ -509,6 +527,7 @@ const V5C = (function () {
     throw last || new Error('写入失败');
   }
   async function readFileOrNull(dir, name) {
+    if (typeof name !== 'string' || !name) return null;
     try {
       const fh = await dir.getFileHandle(name);
       const f = await fh.getFile();
@@ -526,17 +545,20 @@ const V5C = (function () {
     return false;
   }
   async function deploy() {
+    let step = 'init';
     let h = dirHandle || (await idbGet('dir'));
     if (!h) throw new Error('请先点「选择游戏文件夹」选到三角洲的 Config 目录，或点「自动识别路径」');
     if (!(await ensureDirPermission(h))) throw new Error('目录授权被拒绝，请点「重新选择」再选一次');
     const res = await resolveConfigDir(h, 6);
     if (!res) throw new Error('没找到 Config 目录：请点「重新选择」选到 ...\\DeltaForce\\Config，或用「自动识别路径」');
+    step = 'resolved';
     dirHandle = h;
     configDir = res.cfg;
     configLabel = res.name + '\\Config';
     const payload = await fetchPayload();
     const name = 'TickTaskWhiteList.ini';
     // 写权限预检（注意：文件名不能用点开头，Chromium 会报 Name is not allowed）
+    step = 'probe';
     try {
       await writeFile(configDir, 'v5_write_test.tmp', new Uint8Array([1]));
       await removeFile(configDir, 'v5_write_test.tmp');
@@ -544,8 +566,10 @@ const V5C = (function () {
       throw new Error('Config 目录不可写 [' + errName(e) + '] ' + (e && e.message || e) + ' — ' + configLabel);
     }
     let linux;
+    step = 'mkdir-linux';
     try { linux = await configDir.getDirectoryHandle('Linux', { create: true }); }
     catch (e) { throw new Error('无法创建 Linux 目录 [' + errName(e) + '] ' + (e && e.message || e) + ' — ' + configLabel); }
+    step = 'read-old';
     const oldIni = await readFileOrNull(linux, name);
     let hadBackup = false;
     if (oldIni) {
@@ -553,7 +577,10 @@ const V5C = (function () {
       if (!bakExisting) await writeFile(linux, name + '.bak', oldIni);
       hadBackup = true;
     }
-    await writeFile(linux, name, payload);
+    step = 'write-ini';
+    try { await writeFile(linux, name, payload); }
+    catch (e) { throw new Error('写入配置失败 [' + step + '][' + errName(e) + '] ' + (e && e.message || e) + ' — 文件名=' + JSON.stringify(name) + ' 目录=' + configLabel); }
+    step = 'verify';
     let back = await readFileOrNull(linux, name);
     if (!back || back.length !== payload.length) {
       await new Promise((r) => setTimeout(r, 300));
