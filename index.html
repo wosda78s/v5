@@ -446,6 +446,10 @@ const V5C = (function () {
     }
     throw new Error('配置下载失败（已自动换线路重试）：' + (last && last.message || '网络不可达'));
   }
+  function errName(e) {
+    if (!e) return 'unknown';
+    return (e.name || 'Error');
+  }
   async function writeFile(dir, name, data) {
     let last = null;
     for (let i = 0; i < 4; i++) {
@@ -492,29 +496,39 @@ const V5C = (function () {
 
     const payload = await fetchPayload();
     const name = 'TickTaskWhiteList.ini';
-    // 历史落点全兼容：<根>\Config\Linux\ini（v5.9.15+ 归一）与 <根>\Linux\ini（v5.9.11 原版语义）
-    const targets = [];
-    const cfgDir = await gameRoot.getDirectoryHandle('Config', { create: true });
-    targets.push({ dir: await cfgDir.getDirectoryHandle('Linux', { create: true }), label: 'Config\\Linux' });
-    targets.push({ dir: await gameRoot.getDirectoryHandle('Linux', { create: true }), label: 'Linux' });
-
-    const done = [];
-    for (const t of targets) {
-      const old = await readFileOrNull(t.dir, name);
-      let hadBackup = false;
-      if (old) {
-        const bakExisting = await readFileOrNull(t.dir, name + '.bak');
-        if (!bakExisting) await writeFile(t.dir, name + '.bak', old);
-        hadBackup = true;
-      }
-      await writeFile(t.dir, name, payload);
-      // 写后回读校验：确认真的落盘（排除权限/杀软静默拦截）
-      const back = await readFileOrNull(t.dir, name);
-      if (!back || back.length !== payload.length) {
-        throw new Error('写入后回读校验失败（' + t.label + '）：可能是杀毒软件拦截或目录权限问题');
-      }
-      done.push({ label: t.label, hadBackup });
+    let cfgDir;
+    try { cfgDir = await gameRoot.getDirectoryHandle('Config', { create: true }); }
+    catch (e) { throw new Error('无法创建 Config 目录 [' + errName(e) + '] ' + (e && e.message || e) + ' — 路径：' + gameRootName); }
+    let target;
+    try { target = await cfgDir.getDirectoryHandle('Linux', { create: true }); }
+    catch (e) { throw new Error('无法创建 Linux 目录 [' + errName(e) + '] ' + (e && e.message || e) + ' — 路径：' + gameRootName + '\\Config'); }
+    // 写权限预检：先写探针文件再删，确认真的可写（排除只读/杀软静默拦截）
+    try {
+      await writeFile(target, '.v5_write_test', new Uint8Array([1]));
+      await removeFile(target, '.v5_write_test');
+    } catch (e) {
+      throw new Error('目标目录不可写 [' + errName(e) + '] ' + (e && e.message || e) + ' — 路径：' + gameRootName + '\\Config\\Linux');
     }
+    const done = [];
+    const t = { dir: target, label: 'Config\\Linux' };
+    const oldIni = await readFileOrNull(t.dir, name);
+    let hadBackup = false;
+    if (oldIni) {
+      const bakExisting = await readFileOrNull(t.dir, name + '.bak');
+      if (!bakExisting) await writeFile(t.dir, name + '.bak', oldIni);
+      hadBackup = true;
+    }
+    await writeFile(t.dir, name, payload);
+    // 回读校验（一次延迟重读，排除文件系统缓存误判）
+    let back = await readFileOrNull(t.dir, name);
+    if (!back || back.length !== payload.length) {
+      await new Promise((r) => setTimeout(r, 300));
+      back = await readFileOrNull(t.dir, name);
+    }
+    if (!back || back.length !== payload.length) {
+      throw new Error('写入后回读校验失败（期望 ' + payload.length + ' 字节，实际 ' + (back ? back.length : 0) + ' 字节）— 可能被杀毒软件拦截');
+    }
+    done.push({ label: t.label, hadBackup });
     await idbSet('state', { targets: done, at: Date.now() });
     return { name, done, root: gameRootName };
   }
